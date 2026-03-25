@@ -127,8 +127,8 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="prometheus_timeseries.png",
-        help="Output image file",
+        default=None,
+        help="Output image file (default: prometheus_nc{NC:04d}.png)",
     )
     args = parser.parse_args()
 
@@ -139,6 +139,7 @@ def main():
         return
 
     nc = data["params"]["num_clients"]
+    output_path = args.output or f"prometheus_nc{nc:04d}.png"
 
     # Normalize timestamps to start at 0 (minutes)
     t0 = prom[0]["timestamp"]
@@ -213,8 +214,8 @@ def main():
         fontsize=14, fontweight="bold", y=1.01,
     )
     fig.tight_layout()
-    fig.savefig(args.output, dpi=150, bbox_inches="tight")
-    print(f"Saved to {args.output}")
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved to {output_path}")
 
 
 if __name__ == "__main__":
