@@ -1,6 +1,6 @@
 """Dataset generation from offline specifications.
 
-An offline spec defines the exact shape of each conversation (number of turns,
+An offline spec defines the exact shape of each session (number of turns,
 input/output token counts per turn). The actual text content is sampled from
 text files with wrapping when the token pool is exhausted.
 
@@ -28,32 +28,41 @@ from bench_utils import (
 from tqdm import tqdm
 from transformers import AutoTokenizer  # type: ignore
 
-# Conversation ID is a string (e.g: "CONV_ID_0")
-ConvId = str
+# Session ID is a string (e.g: "SESSION_0")
+SessionId = str
 
 # A list of dicts (dicts with keys "id" and "messages")
-ShareGptConversations = list[dict[str, Any]]
+ShareGptSessions = list[dict[str, Any]]
 
 # A list of dicts (dicts with keys "role" and "content")
 MessagesList = list[dict[str, str]]
 
-# Map conversation ID to conversation messages
-ConversationsMap = dict[ConvId, MessagesList]
+# Map session ID to session messages
+SessionsMap = dict[SessionId, MessagesList]
+
+# Backward-compatible aliases
+ConvId = SessionId
+ShareGptConversations = ShareGptSessions
+ConversationsMap = SessionsMap
 
 
-class ConvSpec(NamedTuple):
-    """Specification for a single conversation."""
+class SessionSpec(NamedTuple):
+    """Specification for a single session."""
 
     num_turns: int  # Number of user-assistant rounds
     input_tokens: list[int]  # Token count for each user turn
     output_tokens: list[int]  # Token count for each assistant turn
 
 
+# Backward-compatible alias
+ConvSpec = SessionSpec
+
+
 class OfflineSpec(NamedTuple):
     """Offline benchmark specification."""
 
     text_files: list[str]
-    conversations: list[ConvSpec]
+    sessions: list[SessionSpec]
 
 
 def parse_offline_spec(conf: dict) -> OfflineSpec:
@@ -65,37 +74,37 @@ def parse_offline_spec(conf: dict) -> OfflineSpec:
         "text_files must be a non-empty list"
     )
 
-    raw_convs = conf.get("conversations")
-    assert isinstance(raw_convs, list) and len(raw_convs) > 0, (
-        "conversations must be a non-empty list"
+    raw_sessions = conf.get("sessions")
+    assert isinstance(raw_sessions, list) and len(raw_sessions) > 0, (
+        "sessions must be a non-empty list"
     )
 
-    conversations = []
-    for i, c in enumerate(raw_convs):
+    sessions = []
+    for i, c in enumerate(raw_sessions):
         num_turns = c.get("num_turns")
         assert isinstance(num_turns, int) and num_turns > 0, (
-            f"conversation {i}: num_turns must be a positive int"
+            f"session {i}: num_turns must be a positive int"
         )
 
         input_tokens = c.get("input_tokens")
         assert isinstance(input_tokens, list) and len(input_tokens) == num_turns, (
-            f"conversation {i}: input_tokens must have length {num_turns}"
+            f"session {i}: input_tokens must have length {num_turns}"
         )
         assert all(isinstance(t, int) and t > 0 for t in input_tokens), (
-            f"conversation {i}: all input_tokens must be positive ints"
+            f"session {i}: all input_tokens must be positive ints"
         )
 
         output_tokens = c.get("output_tokens")
         assert isinstance(output_tokens, list) and len(output_tokens) == num_turns, (
-            f"conversation {i}: output_tokens must have length {num_turns}"
+            f"session {i}: output_tokens must have length {num_turns}"
         )
         assert all(isinstance(t, int) and t > 0 for t in output_tokens), (
-            f"conversation {i}: all output_tokens must be positive ints"
+            f"session {i}: all output_tokens must be positive ints"
         )
 
-        conversations.append(ConvSpec(num_turns, input_tokens, output_tokens))
+        sessions.append(SessionSpec(num_turns, input_tokens, output_tokens))
 
-    return OfflineSpec(text_files=text_files, conversations=conversations)
+    return OfflineSpec(text_files=text_files, sessions=sessions)
 
 
 def sample_tokens_with_wrap(
@@ -126,19 +135,19 @@ def sample_tokens_with_wrap(
     return result
 
 
-def generate_conversations_from_spec(
+def generate_sessions_from_spec(
     spec: OfflineSpec, tokenizer: AutoTokenizer
-) -> ConversationsMap:
-    """Generate conversations from an offline spec by sampling text with wrapping."""
+) -> SessionsMap:
+    """Generate sessions from an offline spec by sampling text with wrapping."""
     base_prompt_text = "Please rewrite the following text and add more content: "
     base_prompt_token_count = len(
         tokenizer.encode(base_prompt_text, add_special_tokens=False)
     )
 
     logger.info(
-        f"{Color.PURPLE}Generating conversations from offline spec...{Color.RESET}"
+        f"{Color.PURPLE}Generating sessions from offline spec...{Color.RESET}"
     )
-    logger.info(f"Number of conversations: {len(spec.conversations)}")
+    logger.info(f"Number of sessions: {len(spec.sessions)}")
 
     # Load text files into a single token pool
     list_of_tokens: list[int] = []
@@ -154,26 +163,26 @@ def generate_conversations_from_spec(
 
     assert len(list_of_tokens) > 0, "No tokens loaded from text files"
 
-    conversations: ConversationsMap = {}
+    sessions: SessionsMap = {}
     offset = 0
 
-    for conv_idx, conv_spec in enumerate(
+    for session_idx, session_spec in enumerate(
         tqdm(
-            spec.conversations,
-            total=len(spec.conversations),
-            desc="Generating conversations",
-            unit="conv",
+            spec.sessions,
+            total=len(spec.sessions),
+            desc="Generating sessions",
+            unit="session",
         )
     ):
-        conv_id = f"CONV_ID_{conv_idx}"
+        session_id = f"SESSION_{session_idx}"
         messages: MessagesList = []
 
-        for turn_idx in range(conv_spec.num_turns):
+        for turn_idx in range(session_spec.num_turns):
             # --- User message ---
-            target_input = conv_spec.input_tokens[turn_idx]
+            target_input = session_spec.input_tokens[turn_idx]
 
-            # Build preamble (unique per conversation to avoid shared prefix)
-            content = f"{conv_idx} is a nice number... "
+            # Build preamble (unique per session to avoid shared prefix)
+            content = f"{session_idx} is a nice number... "
             content += base_prompt_text
             preamble_tokens = len(
                 tokenizer.encode(content, add_special_tokens=False)
@@ -190,28 +199,32 @@ def generate_conversations_from_spec(
             # --- Assistant placeholder ---
             # Content is only used to determine min_tokens/max_tokens for the
             # API request. Actual content gets replaced by the LLM's response.
-            target_output = max(1, conv_spec.output_tokens[turn_idx])
+            target_output = max(1, session_spec.output_tokens[turn_idx])
             sampled = sample_tokens_with_wrap(list_of_tokens, 0, target_output)
             asst_content = tokenizer.decode(sampled)
             messages.append({"role": "assistant", "content": asst_content})
 
-        conversations[conv_id] = messages
+        sessions[session_id] = messages
 
-        # Advance offset to reduce text overlap between conversations
-        offset += conv_spec.num_turns
+        # Advance offset to reduce text overlap between sessions
+        offset += session_spec.num_turns
 
-    return conversations
+    return sessions
 
 
-def print_conv_stats(
-    conversations: ConversationsMap, tokenizer: AutoTokenizer
+# Backward-compatible alias
+generate_conversations_from_spec = generate_sessions_from_spec
+
+
+def print_session_stats(
+    sessions: SessionsMap, tokenizer: AutoTokenizer
 ) -> None:
-    """Print statistics about the generated conversations."""
-    conv_stats: list[dict[Any, Any]] = []
+    """Print statistics about the generated sessions."""
+    session_stats: list[dict[Any, Any]] = []
     req_stats: list[int] = []
 
     print("\nCollecting statistics...")
-    for messages in conversations.values():
+    for messages in sessions.values():
         user_tokens: list[int] = []
         assistant_tokens: list[int] = []
         request_tokens: list[int] = []
@@ -235,7 +248,7 @@ def print_conv_stats(
             "assistant_tokens": mean(assistant_tokens),
         }
 
-        conv_stats.append(item_stats)
+        session_stats.append(item_stats)
         req_stats.extend(request_tokens)
 
     percentiles = [0.25, 0.5, 0.75, 0.9, 0.99]
@@ -244,9 +257,9 @@ def print_conv_stats(
     pd.set_option("display.max_columns", None)
 
     print(TEXT_SEPARATOR)
-    print(f"{Color.YELLOW}Conversations statistics:{Color.RESET}")
+    print(f"{Color.YELLOW}Session statistics:{Color.RESET}")
     print(TEXT_SEPARATOR)
-    df = pd.DataFrame(conv_stats)
+    df = pd.DataFrame(session_stats)
     print(df.describe(percentiles=percentiles).transpose())
     print(TEXT_SEPARATOR)
     print(f"{Color.YELLOW}Request statistics:{Color.RESET}")
@@ -256,9 +269,17 @@ def print_conv_stats(
     print(TEXT_SEPARATOR)
 
 
-def conversations_dict_to_list(input_dict: ConversationsMap) -> ShareGptConversations:
-    """Convert ConversationsMap to ShareGPT list format."""
-    output: ShareGptConversations = []
-    for conv_id, conv_data in input_dict.items():
-        output.append({"id": conv_id, "messages": conv_data})
+# Backward-compatible alias
+print_conv_stats = print_session_stats
+
+
+def sessions_dict_to_list(input_dict: SessionsMap) -> ShareGptSessions:
+    """Convert SessionsMap to ShareGPT list format."""
+    output: ShareGptSessions = []
+    for session_id, session_data in input_dict.items():
+        output.append({"id": session_id, "messages": session_data})
     return output
+
+
+# Backward-compatible alias
+conversations_dict_to_list = sessions_dict_to_list

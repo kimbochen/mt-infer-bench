@@ -9,16 +9,9 @@
 
 set -euo pipefail
 
-# Install dependencies (if needed)
-pip install -q aiohttp transformers tqdm
-
-# Check for SERVER_HOST env var
-if [ -z "${SERVER_HOST:-}" ]; then
-    echo "ERROR: SERVER_HOST not set. Submit with:"
-    echo "  SERVER_HOST=\$(squeue --name=vllm-minimax-m25 --format=%N -h) sbatch bmk_minimax-m25.sbatch"
-    exit 1
-fi
+: "${SERVER_HOST:?SERVER_HOST not set. Use: SERVER_HOST=<node> sbatch bmk_minimax-m25.sbatch}"
 SERVER_URL="http://${SERVER_HOST}:8000"
+
 
 # Wait for server to be healthy
 echo "Waiting for server at $SERVER_URL..."
@@ -29,22 +22,19 @@ echo "Server is ready"
 
 
 # Set variables
-export HF_HOME=/mnt/vast/hf_cache
-
 MODEL="MiniMaxAI/MiniMax-M2.5"
+HF_HOME=/mnt/vast/hf_cache
 BENCH_DIR=/workspace/multiturn_benchmark
 RESULTS_DIR=/workspace/results
-SPEC_FILE="${BENCH_DIR}/wildchat_downsample_40k.json"
+SPEC_FILE="${BENCH_DIR}/wildchat_downsample_15k.json"
 
+export HF_HOME
 mkdir -p "$RESULTS_DIR"
-
-REQUEST_RATE=0.04
-CONVOS_PER_CLIENT=4
-BATCHES_PER_CLIENT=10  # each client processes 10x its active window
 
 
 # Sweep number of clients
-NUM_CLIENTS_SWEEP=(1 2 4 8 16 32 64 128 192 256 384 512 768 1024)
+NUM_CLIENTS_SWEEP=(16 32 48 64 96 128 192 256 384 512)
+REQUEST_RATE=0.04
 
 for NC in "${NUM_CLIENTS_SWEEP[@]}"; do
     JSON_FILE="${RESULTS_DIR}/mtbench_minimax-m25_clients${NC}.json"
@@ -53,20 +43,22 @@ for NC in "${NUM_CLIENTS_SWEEP[@]}"; do
         continue
     fi
 
-    MAX_ACTIVE=$((NC * CONVOS_PER_CLIENT))
-    MAX_CONVOS=$((NC * CONVOS_PER_CLIENT * BATCHES_PER_CLIENT))
-    AGG_RATE=$(python3 -c "print($NC * $REQUEST_RATE)")
-    echo "=== Benchmark: num-clients=${NC}, max-active=${MAX_ACTIVE}, max-convos=${MAX_CONVOS}, agg-request-rate=${AGG_RATE} req/s ==="
+    MAX_ACTIVE=$NC # 1 session per client, no interleaving
 
-    python3 ${BENCH_DIR}/benchmark_serving_multi_turn.py \
+    # Total sessions = NC clients * 0.04 req/s * 10 min steady state * 60 s/min
+    # Minimum 1000 sessions for P99 percentile stability
+    MAX_SESSIONS=$(python3 -c "import math; print(max(1000, math.ceil($NC * $REQUEST_RATE * 10 * 60)))")
+
+    echo "=== Benchmark: num-clients=${NC}, max-active=${MAX_ACTIVE}, max-sessions=${MAX_SESSIONS} ==="
+
+    python3 ${BENCH_DIR}/bench_serving_multiturn.py \
         --model $MODEL \
         --url "$SERVER_URL" \
         --input-file "$SPEC_FILE" \
         --num-clients $NC \
-        --max-active-conversations $MAX_ACTIVE \
-        --max-conversations $MAX_CONVOS \
+        --max-active-sessions $MAX_ACTIVE \
+        --max-sessions $MAX_SESSIONS \
         --request-rate $REQUEST_RATE \
-        --no-early-stop \
         --json-output "$JSON_FILE"
 
     echo "Done: $JSON_FILE"

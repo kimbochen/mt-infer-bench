@@ -186,7 +186,7 @@ def compute_spec_token_stats(spec_file: str) -> tuple[float, float, float]:
     total_output = 0
     total_requests = 0
 
-    for conv in spec["conversations"]:
+    for conv in spec["sessions"]:
         inp = conv["input_tokens"]
         out = conv["output_tokens"]
         n = conv["num_turns"]

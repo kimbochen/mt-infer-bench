@@ -123,7 +123,7 @@ def main():
     print(f'Downsampled to {len(result)} sessions.')
 
     # Convert to offline spec format, padding short token lists with 1
-    conversations = []
+    sessions = []
     padded = 0
     for s in result:
         n = s['num_turns']
@@ -135,7 +135,7 @@ def main():
                 inp.append(1)
             while len(out) < n:
                 out.append(1)
-        conversations.append({
+        sessions.append({
             'num_turns': n,
             'input_tokens': inp[:n],
             'output_tokens': out[:n],
@@ -144,7 +144,7 @@ def main():
         print(f'Padded {padded} sessions with short token lists (filled with 1).')
     output_data = {
         'text_files': ['/workspace/multiturn_benchmark/gutenberg_11m.txt'],
-        'conversations': conversations,
+        'sessions': sessions,
     }
 
     out_path = args.output or f'wildchat_downsampled_{len(result)}.json'
@@ -155,11 +155,11 @@ def main():
     # Print distribution comparison
     print('\n--- Distribution comparison ---')
     orig_turns = [s['num_turns'] for s in stats]
-    down_turns = [c['num_turns'] for c in conversations]
+    down_turns = [c['num_turns'] for c in sessions]
     orig_in = [t for s in stats for t in s['input_toks']]
-    down_in = [t for c in conversations for t in c['input_tokens']]
+    down_in = [t for c in sessions for t in c['input_tokens']]
     orig_out = [t for s in stats for t in s['output_toks']]
-    down_out = [t for c in conversations for t in c['output_tokens']]
+    down_out = [t for c in sessions for t in c['output_tokens']]
 
     for name, orig, down in [('num_turns', orig_turns, down_turns),
                               ('input_tokens', orig_in, down_in),

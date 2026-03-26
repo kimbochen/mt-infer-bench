@@ -1,7 +1,7 @@
 """Multi-turn benchmark client.
 
-Benchmarks online inference by sending multi-turn conversations to an
-OpenAI-compatible chat completions API. Conversations are defined by an
+Benchmarks online inference by sending multi-turn sessions to an
+OpenAI-compatible chat completions API. Sessions are defined by an
 offline spec (exact turn counts and token counts per turn) with text
 content sampled from text files.
 
@@ -29,15 +29,15 @@ import aiohttp  # type: ignore
 import numpy as np  # type: ignore
 import pandas as pd  # type: ignore
 from bench_dataset import (
-    ConversationsMap,
-    ConvId,
+    SessionsMap,
+    SessionId,
     MessagesList,
     OfflineSpec,
-    ShareGptConversations,
-    conversations_dict_to_list,
-    generate_conversations_from_spec,
+    ShareGptSessions,
+    sessions_dict_to_list,
+    generate_sessions_from_spec,
     parse_offline_spec,
-    print_conv_stats,
+    print_session_stats,
 )
 from bench_utils import TEXT_SEPARATOR, Color, logger
 from transformers import AutoTokenizer  # type: ignore
@@ -46,7 +46,7 @@ NUM_TOKENS_FROM_DATASET = 0
 TERM_SIGNAL = None
 
 
-class ConversationSampling(str, Enum):
+class SessionSampling(str, Enum):
     ROUND_ROBIN = "round_robin"
     RANDOM = "random"
 
@@ -59,11 +59,11 @@ class ClientArgs(NamedTuple):
     max_num_requests: int | None
     skip_first_round: bool
     max_turns: int | None  # max rounds (user-assistant pairs)
-    max_active_conversations: int
+    max_active_sessions: int
     verbose: bool
     print_content: bool
     verify_output: bool
-    conversation_sampling: ConversationSampling
+    session_sampling: SessionSampling
     request_rate: float
     max_retries: int
 
@@ -108,7 +108,7 @@ class RequestStats(NamedTuple):
     output_num_chunks: int
     output_num_first_chunk_tokens: int
     approx_cached_percent: float
-    conversation_id: str
+    session_id: str
     client_id: int
 
     def __str__(self) -> str:
@@ -413,8 +413,8 @@ def get_messages_token_count(
 async def send_turn(
     session: aiohttp.ClientSession,
     client_id: int,
-    conv_id: str,
-    conversation_messages: MessagesList,
+    session_id: str,
+    session_messages: MessagesList,
     messages_to_use: int,
     tokenizer: AutoTokenizer,
     req_args: RequestArgs,
@@ -422,9 +422,9 @@ async def send_turn(
     verify_output: bool,
 ) -> RequestStats | None:
     assert messages_to_use > 0
-    assert messages_to_use <= len(conversation_messages)
+    assert messages_to_use <= len(session_messages)
 
-    messages = conversation_messages[:messages_to_use]
+    messages = session_messages[:messages_to_use]
 
     # Index of the current message (should be "user")
     index = messages_to_use - 1
@@ -432,12 +432,12 @@ async def send_turn(
     assert len(messages[index].keys()) == 2
     assert "role" in messages[index] and "content" in messages[index]
     assert messages[index]["role"] == "user", (
-        f"Failed on conversation ID {conv_id}, message role should be user"
+        f"Failed on session ID {session_id}, message role should be user"
     )
 
     if verbose:
         print(
-            f"{Color.CYAN}Messages (conversation ID {conv_id},"
+            f"{Color.CYAN}Messages (session ID {session_id},"
             f" {len(messages)} messages, turn {(messages_to_use + 1) // 2}):{Color.RESET}",
             messages,
         )
@@ -446,14 +446,14 @@ async def send_turn(
     min_tokens = None if req_args.limit_min_tokens < 0 else req_args.limit_min_tokens
     max_tokens = None if req_args.limit_max_tokens < 0 else req_args.limit_max_tokens
 
-    if len(conversation_messages) > messages_to_use:
-        # The conversation contains an assistant answer for the next user prompt
+    if len(session_messages) > messages_to_use:
+        # The session contains an assistant answer for the next user prompt
         if (
             min_tokens == NUM_TOKENS_FROM_DATASET
             or max_tokens == NUM_TOKENS_FROM_DATASET
         ):
-            # Compute number of tokens in the answer (from the input conversation)
-            assistant_answer = conversation_messages[messages_to_use]
+            # Compute number of tokens in the answer (from the input session)
+            assistant_answer = session_messages[messages_to_use]
             answer_num_tokens = get_token_count(tokenizer, assistant_answer["content"])
             assert assistant_answer["role"] == "assistant"
 
@@ -463,7 +463,7 @@ async def send_turn(
         if max_tokens == NUM_TOKENS_FROM_DATASET:
             max_tokens = max(1, answer_num_tokens)
 
-    # Send the current conversation to the LLM and get a response
+    # Send the current session to the LLM and get a response
     response: ServerResponse = await send_request(
         session,
         messages,
@@ -528,7 +528,7 @@ async def send_turn(
         output_num_chunks=response.num_chunks,
         output_num_first_chunk_tokens=first_chunk_tokens,
         approx_cached_percent=approx_cached_percent,
-        conversation_id=conv_id,
+        session_id=session_id,
         client_id=client_id,
     )
 
@@ -542,15 +542,15 @@ async def send_turn(
 
     # Save the LLM's answer (used as context for the next user turn)
     answer_index = messages_to_use
-    if len(conversation_messages) > answer_index:
-        assert conversation_messages[answer_index]["role"] == "assistant", (
-            f"Failed on conversation ID {conv_id}, message role should be assistant"
+    if len(session_messages) > answer_index:
+        assert session_messages[answer_index]["role"] == "assistant", (
+            f"Failed on session ID {session_id}, message role should be assistant"
         )
 
-        orig_content = conversation_messages[answer_index]["content"]
+        orig_content = session_messages[answer_index]["content"]
         if verify_output:
             debug_info = (
-                f"LLM/dataset answers do not match ({conv_id}):"
+                f"LLM/dataset answers do not match ({session_id}):"
                 f"\n'{get_short_string(output_content)}' (len: {len(output_content)}),"
                 f"\n'{get_short_string(orig_content)}' (len: {len(orig_content)})"
             )
@@ -558,11 +558,11 @@ async def send_turn(
                 raise ValueError(debug_info)
 
         # Update the answer
-        conversation_messages[answer_index]["content"] = output_content
+        session_messages[answer_index]["content"] = output_content
     else:
         # A user prompt that has no answer, add the answer as a new message
         new_answer = {"role": "assistant", "content": output_content}
-        conversation_messages.append(new_answer)
+        session_messages.append(new_answer)
 
     return rs
 
@@ -599,12 +599,12 @@ async def client_main(
     stop_event: mp.Event,  # type: ignore
     task_queue: mp.Queue,
     result_queue: mp.Queue,
-    conv_queue: mp.Queue,
+    session_queue: mp.Queue,
 ) -> None:
     logger.info(
         f"{Color.CYAN}Started client {client_id}: "
         f"max_num_requests={args.max_num_requests}, "
-        f"max_active_conversations={args.max_active_conversations}{Color.RESET}"
+        f"max_active_sessions={args.max_active_sessions}{Color.RESET}"
     )
 
     # Set unique seed per client (each client runs in its own process)
@@ -612,24 +612,24 @@ async def client_main(
     random.seed(client_seed)
     np.random.seed(client_seed)
 
-    # Active conversations
-    active_convs: ConversationsMap = {}
-    conv_id_queue: deque = deque(maxlen=args.max_active_conversations)
+    # Active sessions
+    active_sessions: SessionsMap = {}
+    session_id_queue: deque = deque(maxlen=args.max_active_sessions)
 
-    # Track completed rounds per conversation (0-based)
+    # Track completed rounds per session (0-based)
     rounds_done: Counter = Counter()
     num_successes = 0
     num_failures = 0
 
-    # Track the timestamp of the last turn per conversation (debug only)
-    time_of_last_turn: dict[ConvId, float] = {}
+    # Track the timestamp of the last turn per session (debug only)
+    time_of_last_turn: dict[SessionId, float] = {}
 
-    # Flag: no new tasks (conversations) available from the queue
+    # Flag: no new tasks (sessions) available from the queue
     task_queue_empty = False
 
     async with aiohttp.ClientSession() as session:
-        # Continue while there is work: either tasks in queue or active conversations
-        while not task_queue_empty or len(active_convs) > 0:
+        # Continue while there is work: either tasks in queue or active sessions
+        while not task_queue_empty or len(active_sessions) > 0:
             result = None
 
             if (
@@ -650,79 +650,79 @@ async def client_main(
                 break
 
             while (
-                len(active_convs) < args.max_active_conversations
+                len(active_sessions) < args.max_active_sessions
                 and task_queue_empty is False
             ):
-                # Get a new conversation from the task queue
-                conv_id, messages = task_queue.get()
+                # Get a new session from the task queue
+                session_id, messages = task_queue.get()
 
-                if conv_id is TERM_SIGNAL:
+                if session_id is TERM_SIGNAL:
                     task_queue_empty = True
                     break
 
                 if args.skip_first_round:
                     # Skip the first round (user + assistant),
                     # relevant if warmup was enabled.
-                    rounds_done[conv_id] += 1
+                    rounds_done[session_id] += 1
 
                 total_rounds = len(messages) // 2
-                if rounds_done[conv_id] < total_rounds:
-                    # Add new conversation
-                    active_convs[conv_id] = messages
-                    conv_id_queue.append(conv_id)
+                if rounds_done[session_id] < total_rounds:
+                    # Add new session
+                    active_sessions[session_id] = messages
+                    session_id_queue.append(session_id)
 
                     if args.verbose:
                         logger.info(
-                            f"{Color.GREEN}Client {client_id} will use conversation "
-                            f"ID {conv_id} (active conversations "
-                            f"{len(active_convs)}){Color.RESET}"
+                            f"{Color.GREEN}Client {client_id} will use session "
+                            f"ID {session_id} (active sessions "
+                            f"{len(active_sessions)}){Color.RESET}"
                         )
 
                 elif args.verbose:
                     logger.info(
-                        f"{Color.YELLOW}Client {client_id} will not use conversation "
-                        f"ID {conv_id} (all {total_rounds} turns already "
+                        f"{Color.YELLOW}Client {client_id} will not use session "
+                        f"ID {session_id} (all {total_rounds} turns already "
                         f"sent){Color.RESET}"
                     )
 
-            if len(active_convs) == 0 and task_queue_empty:
+            if len(active_sessions) == 0 and task_queue_empty:
                 logger.info(
                     f"{Color.YELLOW}Client {client_id} has no more work{Color.RESET}"
                 )
                 break
 
-            # Pick an active conversation for the next request
-            if args.conversation_sampling == ConversationSampling.ROUND_ROBIN:
-                conv_id = conv_id_queue.pop()
+            # Pick an active session for the next request
+            if args.session_sampling == SessionSampling.ROUND_ROBIN:
+                session_id = session_id_queue.pop()
             else:
-                active_ids = list(active_convs.keys())
-                conv_id = random.choice(active_ids)
+                active_ids = list(active_sessions.keys())
+                session_id = random.choice(active_ids)
 
-            messages = active_convs[conv_id]
+            messages = active_sessions[session_id]
             assert isinstance(messages, list) and len(messages) > 0
 
             # Compute the message index for this round
-            current_round = rounds_done[conv_id]
+            current_round = rounds_done[session_id]
             messages_to_use = 2 * current_round + 1
 
             assert messages_to_use < len(messages), (
-                f"Round {current_round} is invalid for conversation ID {conv_id}"
+                f"Round {current_round} is invalid for session ID {session_id}"
                 f" that has only {len(messages) // 2} turns"
             )
 
             if args.verbose:
                 curr_time_sec: float = time.perf_counter()
                 time_since_last_turn: str | float = "N/A"
-                if conv_id in time_of_last_turn:
+                if session_id in time_of_last_turn:
                     time_since_last_turn = round(
-                        curr_time_sec - time_of_last_turn[conv_id], 3
+                        curr_time_sec - time_of_last_turn[session_id], 3
                     )
                 logger.info(
-                    f"Client {client_id} using conversation ID {conv_id} "
+                    f"Client {client_id} using session ID {session_id} "
                     f"(turn: {current_round + 1}, time since last turn [sec]: "
                     f"{time_since_last_turn})"
                 )
-                time_of_last_turn[conv_id] = curr_time_sec
+                time_of_last_turn[session_id] = curr_time_sec
 
             success = False
             for attempt_cnt in range(args.max_retries + 1):
@@ -731,7 +731,7 @@ async def client_main(
                     result = await send_turn(
                         session,
                         client_id,
-                        conv_id,
+                        session_id,
                         messages,
                         messages_to_use,
                         tokenizer,
@@ -746,20 +746,20 @@ async def client_main(
                     else:
                         logger.warning(
                             f"{Color.YELLOW}Client {client_id} - Request rejected "
-                            f"during conversation ID {conv_id} "
+                            f"during session ID {session_id} "
                             f"(turn: {current_round + 1}){Color.RESET}"
                         )
                 except asyncio.exceptions.TimeoutError:
                     exception = True
                     logger.error(
-                        "%sClient %d - Timeout during conversation ID %s (turn: %d). "
+                        "%sClient %d - Timeout during session ID %s (turn: %d). "
                         "Base timeout is %ss (set with --request-timeout-sec), but the "
                         "effective timeout may be longer based on max_tokens. If this "
                         "is unexpected, consider increasing the timeout or checking "
                         "model performance.%s",
                         Color.RED,
                         client_id,
-                        conv_id,
+                        session_id,
                         current_round + 1,
                         req_args.timeout_sec,
                         Color.RESET,
@@ -768,7 +768,7 @@ async def client_main(
                     exception = True
                     logger.exception(
                         f"{Color.RED}Client {client_id} - Exception during "
-                        f"conversation ID {conv_id} "
+                        f"session ID {session_id} "
                         f"(turn: {current_round + 1}){Color.RESET}"
                     )
 
@@ -778,8 +778,8 @@ async def client_main(
 
             if not success:
                 num_failures += 1
-                # Remove the conversation (should not be used again)
-                active_convs.pop(conv_id)
+                # Remove the session (should not be used again)
+                active_sessions.pop(session_id)
                 if exception:
                     break  # Exit gracefully instead of raising an error
 
@@ -787,30 +787,30 @@ async def client_main(
                 num_successes += 1
 
                 # Round complete (user message sent + assistant response received)
-                rounds_done[conv_id] += 1
+                rounds_done[session_id] += 1
 
                 total_rounds = len(messages) // 2
                 if args.max_turns is not None:
                     total_rounds = min(args.max_turns, total_rounds)
 
-                if rounds_done[conv_id] >= total_rounds:
-                    # Conversation complete
-                    conv_queue.put((conv_id, active_convs.pop(conv_id)))
+                if rounds_done[session_id] >= total_rounds:
+                    # Session complete
+                    session_queue.put((session_id, active_sessions.pop(session_id)))
                     if args.verbose:
                         logger.info(
                             f"{Color.GREEN}Client {client_id} finished "
-                            f"conversation ID {conv_id}{Color.RESET}"
+                            f"session ID {session_id}{Color.RESET}"
                         )
                 else:
-                    # Conversation continues, insert at the back of the queue
-                    conv_id_queue.appendleft(conv_id)
+                    # Session continues, insert at the back of the queue
+                    session_id_queue.appendleft(session_id)
 
             # Sleep between requests (if rate is positive)
             if args.request_rate > 0:
                 await poisson_sleep(args.request_rate, args.verbose)
 
     # Send indication that the client is done
-    conv_queue.put((TERM_SIGNAL, TERM_SIGNAL))
+    session_queue.put((TERM_SIGNAL, TERM_SIGNAL))
 
     logger.info(
         f"{Color.CYAN}Client {client_id} is done "
@@ -826,7 +826,7 @@ def worker_function(
     stop_event: mp.Event,  # type: ignore
     task_queue: mp.Queue,
     result_queue: mp.Queue,
-    conv_queue: mp.Queue,
+    session_queue: mp.Queue,
 ) -> None:
     asyncio.run(
         client_main(
@@ -837,20 +837,20 @@ def worker_function(
             stop_event,
             task_queue,
             result_queue,
-            conv_queue,
+            session_queue,
         )
     )
 
 
 def get_client_config(
-    args: argparse.Namespace, input_conv: ConversationsMap
+    args: argparse.Namespace, input_sessions: SessionsMap
 ) -> tuple[ClientArgs, RequestArgs]:
     if args.num_clients < 1:
         raise ValueError("Number of clients must be a positive number")
 
-    if len(input_conv) < args.num_clients:
+    if len(input_sessions) < args.num_clients:
         raise ValueError(
-            "Number of conversations must be equal or larger than the number of clients"
+            "Number of sessions must be equal or larger than the number of clients"
         )
 
     max_req_per_client: int | None = None
@@ -860,20 +860,20 @@ def get_client_config(
             raise ValueError("Number of requests should be at least one per client")
         max_req_per_client = req_per_client
 
-    max_active_conversations = args.max_active_conversations
-    if max_active_conversations is None:
-        max_active_conversations = args.num_clients
+    max_active_sessions = args.max_active_sessions
+    if max_active_sessions is None:
+        max_active_sessions = args.num_clients
 
-    if max_active_conversations > len(input_conv):
+    if max_active_sessions > len(input_sessions):
         raise ValueError(
-            f"Max active conversations {max_active_conversations} "
-            "must be equal or less than the total number of conversations"
+            f"Max active sessions {max_active_sessions} "
+            "must be equal or less than the total number of sessions"
         )
 
-    max_active_conv_per_client = max_active_conversations // args.num_clients
+    max_active_conv_per_client = max_active_sessions // args.num_clients
     if max_active_conv_per_client < 1:
         raise ValueError(
-            f"Max active conversations {max_active_conversations} "
+            f"Max active sessions {max_active_sessions} "
             "must be equal or greater than the number of clients"
         )
 
@@ -884,11 +884,11 @@ def get_client_config(
         max_num_requests=max_req_per_client,
         skip_first_round=skip_first_round,
         max_turns=args.max_turns,
-        max_active_conversations=max_active_conv_per_client,
+        max_active_sessions=max_active_conv_per_client,
         verbose=args.verbose,
         print_content=args.print_content,
         verify_output=args.verify_output,
-        conversation_sampling=args.conversation_sampling,
+        session_sampling=args.session_sampling,
         request_rate=args.request_rate,
         max_retries=args.max_retries,
     )
@@ -926,28 +926,59 @@ async def main_mp(
     req_args: RequestArgs,
     bench_args: BenchmarkArgs,
     tokenizer: AutoTokenizer,
-    input_conv: ConversationsMap,
-) -> tuple[ConversationsMap, list[RequestStats]]:
+    input_sessions: SessionsMap,
+) -> tuple[SessionsMap, list[RequestStats]]:
     # An event that will trigger graceful termination of all the clients
     stop_event = mp.Event()
 
-    # Queue for input conversations (from the spec)
-    task_queue: mp.Queue = mp.Queue()
+    num_clients = bench_args.num_clients
+
+    # Balanced session dispatch: sort by total chars (proxy for tokens),
+    # round-robin assign to clients, shuffle within each client
+    session_items = list(input_sessions.items())
+    session_items.sort(
+        key=lambda x: sum(len(m["content"]) for m in x[1]), reverse=True
+    )
+
+    client_assignments: list[list[tuple[str, MessagesList]]] = [
+        [] for _ in range(num_clients)
+    ]
+    for i, item in enumerate(session_items):
+        client_assignments[i % num_clients].append(item)
+
+    for assignment in client_assignments:
+        random.shuffle(assignment)
+
+    logger.info(
+        f"Balanced dispatch: {len(session_items)} sessions across "
+        f"{num_clients} clients "
+        f"(min {min(len(a) for a in client_assignments)}, "
+        f"max {max(len(a) for a in client_assignments)} per client)"
+    )
+
+    # Per-client task queues
+    task_queues: list[mp.Queue] = []
+    for assignment in client_assignments:
+        q: mp.Queue = mp.Queue()
+        for session_id, messages in assignment:
+            q.put((session_id, messages))
+        q.put((TERM_SIGNAL, TERM_SIGNAL))
+        task_queues.append(q)
 
     # Queue for client measurements (TTFT, TPOT, etc. for each request)
     result_queue: mp.Queue = mp.Queue()
 
-    # Queue for output conversations (with the LLM answers)
-    conv_queue: mp.Queue = mp.Queue()
-    output_conv: ConversationsMap = {}
+    # Queue for output sessions (with the LLM answers)
+    session_queue: mp.Queue = mp.Queue()
+    output_sessions: SessionsMap = {}
     client_metrics: list[RequestStats] = []
 
     # Start all clients
     start_time = time.perf_counter_ns()
-    logger.info(f"{Color.GREEN}Starting {bench_args.num_clients} clients{Color.RESET}")
+    logger.info(f"{Color.GREEN}Starting {num_clients} clients{Color.RESET}")
 
     clients = []
-    for client_id in range(bench_args.num_clients):
+    for client_id in range(num_clients):
         client = mp.Process(
             name=f"client_{client_id}",
             target=worker_function,
@@ -957,31 +988,23 @@ async def main_mp(
                 client_args,
                 req_args,
                 stop_event,
-                task_queue,
+                task_queues[client_id],
                 result_queue,
-                conv_queue,
+                session_queue,
             ),
         )
         clients.append(client)
         client.start()
 
-    # Submit all the input conversations as tasks for the clients
-    for conv_id, messages in input_conv.items():
-        task_queue.put((conv_id, messages))
-
-    # Add termination signals for clients
-    for _ in range(bench_args.num_clients):
-        task_queue.put((TERM_SIGNAL, TERM_SIGNAL))
-
-    # Collect the updated conversations from all clients
+    # Collect the updated sessions from all clients
     num_clients_finished = 0
-    total_convs = len(input_conv)
+    total_sessions = len(input_sessions)
 
     debug_stats = DebugStats(logger, min(15 * bench_args.num_clients, 500))
 
     while num_clients_finished < bench_args.num_clients:
-        # Collect updated conversation
-        conv_id, messages = conv_queue.get()
+        # Collect updated session
+        session_id, messages = session_queue.get()
 
         # Collect results (measurements)
         while not result_queue.empty():
@@ -989,7 +1012,7 @@ async def main_mp(
             client_metrics.append(new_data)
             debug_stats.update(new_data)
 
-        if conv_id is TERM_SIGNAL:
+        if session_id is TERM_SIGNAL:
             num_clients_finished += 1
             logger.info(
                 f"{Color.CYAN}{num_clients_finished} out of "
@@ -1002,18 +1025,18 @@ async def main_mp(
                 )
                 stop_event.set()
         else:
-            output_conv[conv_id] = messages
+            output_sessions[session_id] = messages
 
-            finished_convs = len(output_conv)
-            percent = finished_convs / total_convs
+            finished_sessions = len(output_sessions)
+            percent = finished_sessions / total_sessions
 
             print_cycle = max(3, int(bench_args.num_clients / 4))
 
-            if finished_convs % print_cycle == 0:
+            if finished_sessions % print_cycle == 0:
                 runtime_sec = nanosec_to_sec(time.perf_counter_ns() - start_time)
                 logger.info(
-                    f"{Color.CYAN}Finished {finished_convs} out of {total_convs} "
-                    f"conversations ({percent:.0%}), "
+                    f"{Color.CYAN}Finished {finished_sessions} out of {total_sessions} "
+                    f"sessions ({percent:.0%}), "
                     f"{num_clients_finished} out of {bench_args.num_clients} clients "
                     f"finished, collected {len(client_metrics)} measurements, "
                     f"runtime {runtime_sec:.3f} sec{Color.RESET}"
@@ -1024,7 +1047,7 @@ async def main_mp(
                     rps = "N/A"
 
                 runtime_left_sec: str | float = round(
-                    (runtime_sec / finished_convs) * (total_convs - finished_convs), 3
+                    (runtime_sec / finished_sessions) * (total_sessions - finished_sessions), 3
                 )
                 if percent < 0.05:
                     runtime_left_sec = "N/A"
@@ -1069,28 +1092,28 @@ async def main_mp(
 
     logger.info(
         f"All {bench_args.num_clients} clients exited (successfully "
-        f"finished {len(output_conv)} out of {total_convs} conversations)"
+        f"finished {len(output_sessions)} out of {total_sessions} sessions)"
     )
 
     # Clean up queues
     unfinished_tasks = 0
-    while not task_queue.empty():
-        task_queue.get()
-        unfinished_tasks += 1
+    for tq in task_queues:
+        while not tq.empty():
+            tq.get()
+            unfinished_tasks += 1
+        tq.close()
+        tq.join_thread()
 
     if unfinished_tasks > 0:
         logger.debug(f"Discarding {unfinished_tasks} unfinished tasks")
 
-    task_queue.close()
-    task_queue.join_thread()
-
     result_queue.close()
     result_queue.join_thread()
 
-    conv_queue.close()
-    conv_queue.join_thread()
+    session_queue.close()
+    session_queue.join_thread()
 
-    return output_conv, client_metrics
+    return output_sessions, client_metrics
 
 
 def get_filename_with_timestamp(label: str, extension: str) -> str:
@@ -1118,8 +1141,8 @@ def process_statistics(
     raw_data = pd.DataFrame(client_metrics)
 
     if verbose:
-        raw_data = raw_data.sort_values(by=["conversation_id", "start_time_ms"])
-        raw_data["time_between_user_turns_sec"] = raw_data.groupby("conversation_id")[
+        raw_data = raw_data.sort_values(by=["session_id", "start_time_ms"])
+        raw_data["time_between_user_turns_sec"] = raw_data.groupby("session_id")[
             "start_time_ms"
         ].diff()
         raw_data["time_between_user_turns_sec"] = (
@@ -1152,7 +1175,7 @@ def process_statistics(
         "end_time_ms",
         "output_num_first_chunk_tokens",
         "approx_cached_percent",
-        "conversation_id",
+        "session_id",
         "client_id",
     ]
 
@@ -1265,7 +1288,7 @@ async def get_server_info(url: str) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(
         prog="Multi-turn benchmark client",
-        description="Benchmark online inference using multi-turn conversations "
+        description="Benchmark online inference using multi-turn sessions "
         "defined by an offline spec",
     )
     parser.add_argument("--version", action="version", version="%(prog)s 1.0")
@@ -1275,7 +1298,7 @@ async def main() -> None:
         "--input-file",
         type=str,
         required=True,
-        help="Input JSON file with offline spec defining conversations "
+        help="Input JSON file with offline spec defining sessions "
         "(turn counts and token counts per turn)",
     )
     parser.add_argument(
@@ -1283,7 +1306,7 @@ async def main() -> None:
         "--output-file",
         type=str,
         default=None,
-        help="Output JSON file containing conversations with updated assistant answers",
+        help="Output JSON file containing sessions with updated assistant answers",
     )
 
     parser.add_argument(
@@ -1322,10 +1345,10 @@ async def main() -> None:
     )
     parser.add_argument(
         "-k",
-        "--max-active-conversations",
+        "--max-active-sessions",
         type=int,
         default=None,
-        help="Max number of active conversations at a time (for all clients)",
+        help="Max number of active sessions at a time (for all clients)",
     )
     parser.add_argument(
         "-n",
@@ -1339,7 +1362,7 @@ async def main() -> None:
         "--warmup-step",
         default=False,
         action="store_true",
-        help="Run a warmup step (send only the first turn of every conversation); "
+        help="Run a warmup step (send only the first turn of every session); "
         "measurements will not be included in the final benchmark results",
     )
 
@@ -1347,7 +1370,7 @@ async def main() -> None:
         "--max-turns",
         type=int,
         default=None,
-        help="Maximum number of turns per conversation "
+        help="Maximum number of turns per session "
         "(a turn is one user-assistant round), disabled by default",
     )
     parser.add_argument(
@@ -1390,11 +1413,11 @@ async def main() -> None:
         "Default is 0 (no retries).",
     )
     parser.add_argument(
-        "--conversation-sampling",
-        type=ConversationSampling,
-        choices=list(ConversationSampling),
-        default=ConversationSampling.ROUND_ROBIN,
-        help="Strategy for selecting which conversation to use for the next request.",
+        "--session-sampling",
+        type=SessionSampling,
+        choices=list(SessionSampling),
+        default=SessionSampling.ROUND_ROBIN,
+        help="Strategy for selecting which session to use for the next request.",
     )
     parser.add_argument(
         "--verify-output",
@@ -1411,10 +1434,10 @@ async def main() -> None:
     )
 
     parser.add_argument(
-        "--max-conversations",
+        "--max-sessions",
         type=int,
         default=None,
-        help="Use at most this many conversations from the spec. "
+        help="Use at most this many sessions from the spec. "
         "If the spec has more, only the first N are used. "
         "Useful when the spec is sized for the largest sweep point.",
     )
@@ -1430,7 +1453,7 @@ async def main() -> None:
         "--print-stats",
         default=False,
         action="store_true",
-        help="Print conversation statistics after generation",
+        help="Print session statistics after generation",
     )
 
     parser.add_argument(
@@ -1524,41 +1547,41 @@ async def main() -> None:
 
     spec: OfflineSpec = parse_offline_spec(input_data)
     logger.info(
-        f"Loaded spec with {len(spec.conversations)} conversations, "
+        f"Loaded spec with {len(spec.sessions)} sessions, "
         f"text files: {spec.text_files}"
     )
 
     # Disable warning from "huggingface/tokenizers"
     os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-    # Generate conversations from spec (possibly truncated)
-    if args.max_conversations is not None:
-        if args.max_conversations < 1:
-            raise ValueError("--max-conversations must be a positive number")
-        if args.max_conversations < len(spec.conversations):
+    # Generate sessions from spec (possibly truncated)
+    if args.max_sessions is not None:
+        if args.max_sessions < 1:
+            raise ValueError("--max-sessions must be a positive number")
+        if args.max_sessions < len(spec.sessions):
             spec = spec._replace(
-                conversations=spec.conversations[: args.max_conversations]
+                sessions=spec.sessions[: args.max_sessions]
             )
             logger.info(
-                f"Truncated spec to {len(spec.conversations)} conversations "
-                f"(--max-conversations={args.max_conversations})"
+                f"Truncated spec to {len(spec.sessions)} sessions "
+                f"(--max-sessions={args.max_sessions})"
             )
 
-    conversations = generate_conversations_from_spec(spec, tokenizer)
+    sessions = generate_sessions_from_spec(spec, tokenizer)
 
     if args.print_stats:
-        print_conv_stats(conversations, tokenizer)
+        print_session_stats(sessions, tokenizer)
 
     if args.max_turns is not None:
         if args.max_turns < 1:
             raise ValueError("Max turns must be a positive number")
         logger.info(
-            f"{Color.PURPLE}Max turns per conversation "
+            f"{Color.PURPLE}Max turns per session "
             f"is limited to {args.max_turns}{Color.RESET}"
         )
 
     # Create benchmark configurations
-    client_args, req_args = get_client_config(args, conversations)
+    client_args, req_args = get_client_config(args, sessions)
 
     bench_args = BenchmarkArgs(
         url=args.url, num_clients=args.num_clients, early_stop=not args.no_early_stop
@@ -1569,14 +1592,14 @@ async def main() -> None:
     # Warm-up step
     if args.warmup_step:
         warmup_client_args = client_args._replace(
-            skip_first_round=False, max_turns=1, max_active_conversations=1
+            skip_first_round=False, max_turns=1, max_active_sessions=1
         )
         warmup_bench_args = bench_args._replace(early_stop=False)
 
         logger.info("%sWarmup start%s", Color.PURPLE, Color.RESET)
         warmup_start_ns = time.perf_counter_ns()
-        conversations, _ = await main_mp(
-            warmup_client_args, req_args, warmup_bench_args, tokenizer, conversations
+        sessions, _ = await main_mp(
+            warmup_client_args, req_args, warmup_bench_args, tokenizer, sessions
         )
         warmup_runtime_sec = nanosec_to_sec(time.perf_counter_ns() - warmup_start_ns)
         logger.info(
@@ -1596,8 +1619,8 @@ async def main() -> None:
 
     # Run the benchmark
     benchmark_start_ns = time.perf_counter_ns()
-    client_convs, client_metrics = await main_mp(
-        client_args, req_args, bench_args, tokenizer, conversations
+    client_sessions, client_metrics = await main_mp(
+        client_args, req_args, bench_args, tokenizer, sessions
     )
     benchmark_runtime_sec = nanosec_to_sec(time.perf_counter_ns() - benchmark_start_ns)
 
@@ -1637,8 +1660,8 @@ async def main() -> None:
     params = {
         "model": args.model,
         "num_clients": args.num_clients,
-        "num_conversations": len(conversations),
-        "active_conversations": args.max_active_conversations,
+        "num_sessions": len(sessions),
+        "active_sessions": args.max_active_sessions,
         "seed": args.seed,
         "text_files": ", ".join(spec.text_files),
     }
@@ -1663,9 +1686,9 @@ async def main() -> None:
     )
 
     if args.output_file is not None:
-        output_data: ShareGptConversations = conversations_dict_to_list(client_convs)
+        output_data: ShareGptSessions = sessions_dict_to_list(client_sessions)
         logger.info(
-            f"{Color.GREEN}Writing conversations file: {args.output_file}{Color.RESET}"
+            f"{Color.GREEN}Writing sessions file: {args.output_file}{Color.RESET}"
         )
         with open(args.output_file, "w") as f:
             json.dump(output_data, f, indent=4)
