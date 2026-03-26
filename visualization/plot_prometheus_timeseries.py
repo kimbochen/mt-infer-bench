@@ -198,12 +198,12 @@ def main():
         prom, "request_decode_time_seconds_sum", "request_decode_time_seconds_count"
     )
     if len(ts_q):
-        ax.plot(ts_q, queue_ms, color="#f4a582", linewidth=1, label="Queue")
+        ax.plot(ts_q, queue_ms / 1000, color="#f4a582", linewidth=1, label="Queue")
     if len(ts_pf):
-        ax.plot(ts_pf, prefill_ms, color="#2166ac", linewidth=1, label="Prefill")
+        ax.plot(ts_pf, prefill_ms / 1000, color="#2166ac", linewidth=1, label="Prefill")
     if len(ts_d):
-        ax.plot(ts_d, decode_ms, color="#b2182b", linewidth=1, label="Decode")
-    ax.set_ylabel("Latency (ms/req)")
+        ax.plot(ts_d, decode_ms / 1000, color="#b2182b", linewidth=1, label="Decode")
+    ax.set_ylabel("Latency (s/req)")
     ax.set_xlabel("Time (min)")
     ax.set_title("Per-Request Latency Breakdown")
     ax.legend(loc="upper right")

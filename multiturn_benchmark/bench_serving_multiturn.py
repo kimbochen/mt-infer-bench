@@ -211,11 +211,15 @@ class DebugStats:
 class PrometheusCollector:
     """Periodically scrapes /metrics from the server in a background thread."""
 
-    def __init__(self, url: str, interval_sec: float = 5.0) -> None:
+    def __init__(
+        self, url: str, interval_sec: float = 5.0,
+        external_stop=None,
+    ) -> None:
         self.metrics_url = f"{url}/metrics"
         self.interval_sec = interval_sec
         self.snapshots: list[dict] = []
         self._stop_event = threading.Event()
+        self._external_stop = external_stop
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -234,6 +238,9 @@ class PrometheusCollector:
 
     def _scrape_loop(self) -> None:
         while not self._stop_event.is_set():
+            # Stop scraping when benchmark early-stops
+            if self._external_stop is not None and self._external_stop.is_set():
+                break
             try:
                 self._scrape_once()
             except Exception as e:
@@ -778,10 +785,12 @@ async def client_main(
 
             if not success:
                 num_failures += 1
-                # Remove the session (should not be used again)
+                # Remove the failed session and continue with the next one
                 active_sessions.pop(session_id)
-                if exception:
-                    break  # Exit gracefully instead of raising an error
+                logger.warning(
+                    f"{Color.YELLOW}Client {client_id} - Skipping session "
+                    f"{session_id} after {args.max_retries + 1} attempts{Color.RESET}"
+                )
 
             else:
                 num_successes += 1
@@ -929,17 +938,21 @@ async def main_mp(
     bench_args: BenchmarkArgs,
     tokenizer: AutoTokenizer,
     input_sessions: SessionsMap,
+    stop_event=None,
 ) -> tuple[SessionsMap, list[RequestStats]]:
     # An event that will trigger graceful termination of all the clients
-    stop_event = mp.Event()
+    if stop_event is None:
+        stop_event = mp.Event()
 
     num_clients = bench_args.num_clients
 
     # Balanced session dispatch: sort by total chars (proxy for tokens),
     # round-robin assign to clients, shuffle within each client
     session_items = list(input_sessions.items())
+    # Sort by total turns (= total requests). Each turn incurs a fixed
+    # sleep overhead, so total turns determines wall time per client.
     session_items.sort(
-        key=lambda x: sum(len(m["content"]) for m in x[1]), reverse=True
+        key=lambda x: len(x[1]) // 2, reverse=True
     )
 
     client_assignments: list[list[tuple[str, MessagesList]]] = [
@@ -1621,16 +1634,22 @@ async def main() -> None:
         )
         logger.info("%sWarmup done%s", Color.PURPLE, Color.RESET)
 
+    # Shared stop event — used by early stop and prometheus collector
+    bench_stop_event = mp.Event()
+
     # Start prometheus collection
     prom_collector: PrometheusCollector | None = None
     if args.prometheus_interval > 0:
-        prom_collector = PrometheusCollector(args.url, args.prometheus_interval)
+        prom_collector = PrometheusCollector(
+            args.url, args.prometheus_interval, external_stop=bench_stop_event
+        )
         prom_collector.start()
 
     # Run the benchmark
     benchmark_start_ns = time.perf_counter_ns()
     client_sessions, client_metrics = await main_mp(
-        client_args, req_args, bench_args, tokenizer, sessions
+        client_args, req_args, bench_args, tokenizer, sessions,
+        stop_event=bench_stop_event,
     )
     benchmark_runtime_sec = nanosec_to_sec(time.perf_counter_ns() - benchmark_start_ns)
 

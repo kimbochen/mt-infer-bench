@@ -33,7 +33,7 @@ mkdir -p "$RESULTS_DIR"
 
 
 # Sweep number of clients
-NUM_CLIENTS_SWEEP=(16 32 48 64 96 128 192 256 384 512)
+NUM_CLIENTS_SWEEP=(128 384)
 REQUEST_RATE=0.04
 
 for NC in "${NUM_CLIENTS_SWEEP[@]}"; do
