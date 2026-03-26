@@ -794,8 +794,10 @@ async def client_main(
                     total_rounds = min(args.max_turns, total_rounds)
 
                 if rounds_done[session_id] >= total_rounds:
-                    # Session complete
-                    session_queue.put((session_id, active_sessions.pop(session_id)))
+                    # Session complete — send only ID (not messages) to avoid
+                    # blocking on large serialized data in the pipe buffer
+                    active_sessions.pop(session_id)
+                    session_queue.put((session_id, None))
                     if args.verbose:
                         logger.info(
                             f"{Color.GREEN}Client {client_id} finished "
@@ -1002,15 +1004,29 @@ async def main_mp(
 
     debug_stats = DebugStats(logger, min(15 * bench_args.num_clients, 500))
 
-    while num_clients_finished < bench_args.num_clients:
-        # Collect updated session
-        session_id, messages = session_queue.get()
+    import queue as _queue
 
-        # Collect results (measurements)
-        while not result_queue.empty():
-            new_data = result_queue.get()
-            client_metrics.append(new_data)
-            debug_stats.update(new_data)
+    def _drain_result_queue():
+        """Non-blocking drain of result_queue."""
+        while True:
+            try:
+                new_data = result_queue.get_nowait()
+                client_metrics.append(new_data)
+                debug_stats.update(new_data)
+            except _queue.Empty:
+                break
+
+    while num_clients_finished < bench_args.num_clients:
+        _drain_result_queue()
+
+        # Use timeout to periodically drain result_queue even when
+        # session_queue has no new items
+        try:
+            session_id, messages = session_queue.get(timeout=1.0)
+        except _queue.Empty:
+            continue
+
+        _drain_result_queue()
 
         if session_id is TERM_SIGNAL:
             num_clients_finished += 1
@@ -1025,7 +1041,7 @@ async def main_mp(
                 )
                 stop_event.set()
         else:
-            output_sessions[session_id] = messages
+            output_sessions[session_id] = messages  # None (data stays in client)
 
             finished_sessions = len(output_sessions)
             percent = finished_sessions / total_sessions
@@ -1095,17 +1111,11 @@ async def main_mp(
         f"finished {len(output_sessions)} out of {total_sessions} sessions)"
     )
 
-    # Clean up queues
-    unfinished_tasks = 0
+    # Clean up per-client task queues. Use cancel_join_thread() to avoid
+    # hanging on feeder threads that can't flush to dead client processes.
     for tq in task_queues:
-        while not tq.empty():
-            tq.get()
-            unfinished_tasks += 1
+        tq.cancel_join_thread()
         tq.close()
-        tq.join_thread()
-
-    if unfinished_tasks > 0:
-        logger.debug(f"Discarding {unfinished_tasks} unfinished tasks")
 
     result_queue.close()
     result_queue.join_thread()
