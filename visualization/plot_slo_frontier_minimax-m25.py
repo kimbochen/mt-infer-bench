@@ -14,6 +14,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+NUM_GPUS = 8
+
 
 def load_sweep(results_dir: str) -> list[dict]:
     """Load all sweep JSON files, sorted by num_clients."""
@@ -186,7 +188,8 @@ def compute_spec_token_stats(spec_file: str) -> tuple[float, float, float]:
     total_output = 0
     total_requests = 0
 
-    for conv in spec["sessions"]:
+    sessions = spec.get("sessions", spec.get("conversations", spec))
+    for conv in sessions:
         inp = conv["input_tokens"]
         out = conv["output_tokens"]
         n = conv["num_turns"]
@@ -219,15 +222,9 @@ def main():
         help="Offline spec JSON file (for computing token stats in the title)",
     )
     parser.add_argument(
-        "--num-gpus",
-        type=int,
-        required=True,
-        help="Number of GPUs used for serving (for per-GPU throughput)",
-    )
-    parser.add_argument(
         "--output",
         type=str,
-        default="slo_frontier.png",
+        default="slo_frontier_minimax-m25.png",
         help="Output image file (default: slo_frontier.png)",
     )
     args = parser.parse_args()
@@ -238,7 +235,7 @@ def main():
 
     avg_new_input, avg_cached, avg_output = compute_spec_token_stats(args.spec_file)
 
-    title = "MiniMax M2.5 8xH200 TP8 SLO Frontier"
+    title = f"SLO Frontier - MiniMax M2.5 {NUM_GPUS}xH200 TP{NUM_GPUS}"
     subtitle = (
         f"WildChat Multi-Turn, Avg. per Turn: Input {avg_new_input:.0f} tok | "
         f"Cached Input {avg_cached:.0f} tok | Output {avg_output:.0f} tok"
@@ -257,7 +254,7 @@ def main():
                    label_fn=None, label_desc=None):
         for label, pct, color in percentiles:
             pts = compute_sweep_points(
-                runs, metric_key, token_key, args.num_gpus, pct
+                runs, metric_key, token_key, NUM_GPUS, pct
             )
             if pts:
                 xs = [p["x"] for p in pts]

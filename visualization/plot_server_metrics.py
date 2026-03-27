@@ -128,7 +128,7 @@ def main():
         "--output",
         type=str,
         default=None,
-        help="Output image file (default: prometheus_nc{NC:04d}.png)",
+        help="Output image file (default: server_metrics_nc{NC:04d}.png)",
     )
     args = parser.parse_args()
 
@@ -139,7 +139,7 @@ def main():
         return
 
     nc = data["params"]["num_clients"]
-    output_path = args.output or f"prometheus_nc{nc:04d}.png"
+    output_path = args.output or f"server_metrics_nc{nc:04d}.png"
 
     # Normalize timestamps to start at 0 (minutes)
     t0 = prom[0]["timestamp"]
@@ -210,7 +210,7 @@ def main():
     ax.grid(True, alpha=0.3)
 
     fig.suptitle(
-        f"MiniMax M2.5 — Prometheus Metrics (NC={nc})",
+        f"Server Metrics - MiniMax M2.5 8xH200 TP8, NC={nc}",
         fontsize=14, fontweight="bold", y=1.01,
     )
     fig.tight_layout()
