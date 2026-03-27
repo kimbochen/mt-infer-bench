@@ -139,7 +139,7 @@ def main():
         return
 
     nc = data["params"]["num_clients"]
-    output_path = args.output or f"server_metrics_nc{nc:04d}.png"
+    output_path = args.output or f"server_metrics_minimax-m25_nc{nc:03d}.png"
 
     # Normalize timestamps to start at 0 (minutes)
     t0 = prom[0]["timestamp"]

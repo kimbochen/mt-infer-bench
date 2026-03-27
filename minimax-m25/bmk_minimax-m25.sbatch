@@ -5,7 +5,7 @@
 #SBATCH --container-mounts=/mnt/home/kimbo/inferperf-260324:/workspace,/mnt/vast/hf_cache:/mnt/vast/hf_cache
 #SBATCH --no-container-entrypoint
 #SBATCH --job-name=mtbench-mmm25
-#SBATCH --output=/mnt/home/kimbo/inferperf-260324/logs/client.log
+#SBATCH --output=/mnt/home/kimbo/inferperf-260324/minimax-m25/logs/client.log
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ echo "Server is ready"
 MODEL="MiniMaxAI/MiniMax-M2.5"
 HF_HOME=/mnt/vast/hf_cache
 BENCH_DIR=/workspace/multiturn_benchmark
-RESULTS_DIR=/workspace/results
+RESULTS_DIR=/workspace/minimax-m25/results
 SPEC_FILE="${BENCH_DIR}/wildchat_downsample_15k.json"
 
 export HF_HOME

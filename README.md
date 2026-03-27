@@ -59,42 +59,42 @@ dataset_analysis/
   analyze_wildchat.py          # Extract token stats from WildChat dataset
   downsample_wildchat.py       # Stratified downsampling to create offline specs
 
-visualization/
-  plot_slo_throughput.py       # SLO frontier chart (TTFT/TPOT vs throughput)
-  plot_prometheus_timeseries.py # Per-run Prometheus dashboard (4 panels)
-
-bmk_minimax-m25.sbatch         # SLURM benchmark launch script
-serve_minimax-m25.sbatch       # SLURM server launch script
+minimax-m25/                    # MiniMax M2.5 benchmark config
+  bmk_minimax-m25.sbatch       # SLURM benchmark launch script
+  serve_minimax-m25.sbatch     # SLURM server launch script
+  visualization/
+    plot_slo_frontier_minimax-m25.py  # SLO frontier chart
+    plot_server_metrics_minimax-m25.py  # Per-run server metrics dashboard
+    server_metrics/             # Server metrics plots per sweep point
 ```
 
 ## Usage
 
 ```bash
 # Launch server
-sbatch -t 600 serve_minimax-m25.sbatch
+sbatch -t 600 minimax-m25/serve_minimax-m25.sbatch
 
 # Launch benchmark sweep (after server is healthy)
-SERVER_HOST=<server-node> sbatch -t 600 bmk_minimax-m25.sbatch
+SERVER_HOST=<server-node> sbatch -t 600 minimax-m25/bmk_minimax-m25.sbatch
 
 # Or run interactively
 srun -p h200 --gres=gpu:0 \
     --container-image=vllm/vllm-openai:v0.18.0-cu130 \
     --container-mounts=/mnt/home/kimbo/inferperf-260324:/workspace,/mnt/vast/hf_cache:/mnt/vast/hf_cache \
     --no-container-entrypoint -t 600 --pty bash
-# Then: SERVER_HOST=<node> bash bmk_minimax-m25.sbatch
+# Then: SERVER_HOST=<node> bash minimax-m25/bmk_minimax-m25.sbatch
 ```
 
 ## Visualization
 
 ```bash
 # SLO frontier
-uv run --no-project python visualization/plot_slo_throughput.py results/ \
-    --spec-file multiturn_benchmark/wildchat_downsample_15k.json \
-    --num-gpus 8 --output visualization/slo_frontier.png
+uv run --no-project python minimax-m25/visualization/plot_slo_frontier_minimax-m25.py results/ \
+    --spec-file multiturn_benchmark/wildchat_downsample_15k.json
 
-# Prometheus dashboard for a single sweep point
-uv run --no-project python visualization/plot_prometheus_timeseries.py \
+# Server metrics dashboard for a single sweep point
+uv run --no-project python minimax-m25/visualization/plot_server_metrics_minimax-m25.py \
     results/mtbench_minimax-m25_clients128.json
 ```
 
-![SLO Frontier](visualization/slo_frontier.png)
+![SLO Frontier](minimax-m25/visualization/slo_frontier_minimax-m25.png)

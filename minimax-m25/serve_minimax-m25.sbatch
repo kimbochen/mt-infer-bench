@@ -5,7 +5,7 @@
 #SBATCH --container-mounts=/mnt/vast/hf_cache:/mnt/vast/hf_cache
 #SBATCH --no-container-entrypoint
 #SBATCH --job-name=server-mmm25
-#SBATCH --output=/mnt/home/kimbo/inferperf-260324/logs/server.log
+#SBATCH --output=/mnt/home/kimbo/inferperf-260324/minimax-m25/logs/server.log
 
 set -euo pipefail
 
