@@ -14,8 +14,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-NUM_GPUS = 8
-
 
 def load_sweep(results_dir: str) -> list[dict]:
     """Load all sweep JSON files, sorted by num_clients."""
@@ -36,49 +34,6 @@ def load_sweep(results_dir: str) -> list[dict]:
 
     runs.sort(key=lambda r: r["num_clients"])
     return runs
-
-
-def compute_max_throughput_at_slo(
-    runs: list[dict],
-    metric_key: str,
-    token_key: str,
-    num_gpus: int,
-    slo_thresholds: np.ndarray,
-    percentile: float,
-) -> np.ndarray:
-    """For each SLO threshold, find the max throughput across sweep points.
-
-    At each sweep point, compute the percentile of `metric_key`. If it's
-    within the SLO, compute throughput as sum(token_key) / runtime / num_gpus.
-    Return the max throughput that satisfies each SLO.
-    """
-    throughputs = np.zeros(len(slo_thresholds))
-
-    for run in runs:
-        raw = run["raw"]
-        if len(raw) == 0:
-            continue
-
-        metric_vals = np.array([r[metric_key] for r in raw])
-        token_vals = np.array([r[token_key] for r in raw])
-        start_times = np.array([r["start_time_ms"] for r in raw])
-        latencies = np.array([r["latency_ms"] for r in raw])
-
-        pct_val = np.percentile(metric_vals, percentile)
-        runtime_sec = (
-            (start_times + latencies).max() - start_times.min()
-        ) / 1000.0
-
-        if runtime_sec <= 0:
-            continue
-
-        tput = token_vals.sum() / runtime_sec / num_gpus
-
-        # This sweep point satisfies all SLOs >= its percentile value
-        mask = slo_thresholds >= pct_val
-        throughputs[mask] = np.maximum(throughputs[mask], tput)
-
-    return throughputs
 
 
 def _get_prom_delta(prom: list[dict], substr: str) -> float:
@@ -130,7 +85,6 @@ def compute_sweep_points(
             base_per_req = int((dp - dc) / n)
             cached_per_req = int(dc / n)
         else:
-            # Fallback to client-side
             all_input = np.array([r["input_num_tokens"] for r in raw])
             all_cached_frac = np.array([r["approx_cached_percent"] for r in raw])
             cached_per_req = int((all_input * all_cached_frac / 100.0).mean())
@@ -154,10 +108,7 @@ def compute_sweep_points(
 
 
 def pareto_frontier(points: list[dict]) -> list[dict]:
-    """Extract Pareto-optimal points: max throughput (Y) for increasing latency (X).
-
-    Sort by X ascending, keep only points that establish a new Y maximum.
-    """
+    """Extract Pareto-optimal points: max throughput (Y) for increasing latency (X)."""
     if not points:
         return []
     sorted_pts = sorted(points, key=lambda p: p["x"])
@@ -171,15 +122,7 @@ def pareto_frontier(points: list[dict]) -> list[dict]:
 
 
 def compute_spec_token_stats(spec_file: str) -> tuple[float, float, float]:
-    """Compute average per-request token stats from the offline spec.
-
-    For each turn k (0-indexed) in a conversation:
-      - new input = input_tokens[k]
-      - cached input = sum(input_tokens[0:k]) + sum(output_tokens[0:k])
-      - output = output_tokens[k]
-
-    Returns (avg_new_input, avg_cached_input, avg_output) per request.
-    """
+    """Compute average per-request token stats from the offline spec."""
     with open(spec_file) as f:
         spec = json.load(f)
 
@@ -222,12 +165,32 @@ def main():
         help="Offline spec JSON file (for computing token stats in the title)",
     )
     parser.add_argument(
+        "--model-name",
+        type=str,
+        required=True,
+        help="Model name for the title (e.g., 'MiniMax M2.5')",
+    )
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        required=True,
+        help="Number of GPUs used for serving",
+    )
+    parser.add_argument(
+        "--parallelism",
+        type=str,
+        default="TP",
+        help="Parallelism strategy label (e.g., 'TP', 'TEP', 'PP')",
+    )
+    parser.add_argument(
         "--output",
         type=str,
-        default="slo_frontier_minimax-m25.png",
-        help="Output image file (default: slo_frontier.png)",
+        default=None,
+        help="Output image file",
     )
     args = parser.parse_args()
+
+    output_path = args.output or f"slo_frontier.png"
 
     runs = load_sweep(args.results_dir)
     print(f"Loaded {len(runs)} sweep points: "
@@ -235,7 +198,7 @@ def main():
 
     avg_new_input, avg_cached, avg_output = compute_spec_token_stats(args.spec_file)
 
-    title = f"SLO Frontier - MiniMax M2.5 {NUM_GPUS}xH200 TP{NUM_GPUS}"
+    title = f"SLO Frontier - {args.model_name} {args.num_gpus}xH200 {args.parallelism}{args.num_gpus}"
     subtitle = (
         f"WildChat Multi-Turn, Avg. per Turn: Input {avg_new_input:.0f} tok | "
         f"Cached Input {avg_cached:.0f} tok | Output {avg_output:.0f} tok"
@@ -254,7 +217,7 @@ def main():
                    label_fn=None, label_desc=None):
         for label, pct, color in percentiles:
             pts = compute_sweep_points(
-                runs, metric_key, token_key, NUM_GPUS, pct
+                runs, metric_key, token_key, args.num_gpus, pct
             )
             if pts:
                 xs = [p["x"] for p in pts]
@@ -269,7 +232,6 @@ def main():
                 else:
                     ax.scatter([], [], color=color, s=30, label=f"SLO {label}")
 
-                # Add labels on P99 frontier points only
                 if pct == 99 and label_fn is not None:
                     frontier_pts = set(
                         (p["x"], p["y"]) for p in pareto_frontier(pts)
@@ -312,8 +274,8 @@ def main():
     fig.text(0.5, 0.99, subtitle, ha="center", fontsize=11, color="#555555")
     fig.tight_layout()
     fig.subplots_adjust(top=0.90)
-    fig.savefig(args.output, dpi=150, bbox_inches="tight")
-    print(f"Saved to {args.output}")
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Saved to {output_path}")
 
 
 if __name__ == "__main__":

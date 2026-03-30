@@ -49,12 +49,10 @@ def extract_counter_rate(
     ts = np.array([s["timestamp"] for s in snapshots])
     vals = np.array([s["metrics"].get(key, 0) for s in snapshots])
 
-    # Compute rate as delta/dt, smoothed over window
     dt = np.diff(ts)
     dv = np.diff(vals)
     rate = np.where(dt > 0, dv / dt, 0)
 
-    # Smooth with rolling average
     if len(rate) > window:
         kernel = np.ones(window) / window
         rate = np.convolve(rate, kernel, mode="same")
@@ -77,7 +75,6 @@ def extract_counter_ratio(
     d_num = np.diff(nums)
     d_den = np.diff(dens)
 
-    # Rolling sum for smoothing
     if len(d_num) > window:
         kernel = np.ones(window)
         d_num_smooth = np.convolve(d_num, kernel, mode="same")
@@ -110,7 +107,6 @@ def extract_per_request_latency(
         d_sum = np.convolve(d_sum, kernel, mode="same")
         d_count = np.convolve(d_count, kernel, mode="same")
 
-    # Convert seconds to milliseconds
     latency_ms = np.where(d_count > 0, d_sum / d_count * 1000, 0)
     return ts[1:], latency_ms
 
@@ -125,10 +121,28 @@ def main():
         help="Benchmark result JSON file",
     )
     parser.add_argument(
+        "--model-name",
+        type=str,
+        required=True,
+        help="Model name for the title (e.g., 'MiniMax M2.5')",
+    )
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        required=True,
+        help="Number of GPUs used for serving",
+    )
+    parser.add_argument(
+        "--parallelism",
+        type=str,
+        default="TP",
+        help="Parallelism strategy label (e.g., 'TP', 'TEP', 'PP')",
+    )
+    parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output image file (default: server_metrics_nc{NC:04d}.png)",
+        help="Output image file",
     )
     args = parser.parse_args()
 
@@ -139,12 +153,12 @@ def main():
         return
 
     nc = data["params"]["num_clients"]
-    output_path = args.output or f"server_metrics_minimax-m25_nc{nc:03d}.png"
+    output_path = args.output or f"server_metrics_nc{nc:03d}.png"
 
     # Normalize timestamps to start at 0 (minutes)
     t0 = prom[0]["timestamp"]
     for s in prom:
-        s["timestamp"] = (s["timestamp"] - t0) / 60.0  # minutes
+        s["timestamp"] = (s["timestamp"] - t0) / 60.0
 
     fig, axes = plt.subplots(4, 1, figsize=(12, 14), sharex=True)
 
@@ -209,10 +223,8 @@ def main():
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
 
-    fig.suptitle(
-        f"Server Metrics - MiniMax M2.5 8xH200 TP8, NC={nc}",
-        fontsize=14, fontweight="bold", y=1.01,
-    )
+    title = f"Server Metrics - {args.model_name} {args.num_gpus}xH200 {args.parallelism}{args.num_gpus}, NC={nc}"
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.01)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     print(f"Saved to {output_path}")
