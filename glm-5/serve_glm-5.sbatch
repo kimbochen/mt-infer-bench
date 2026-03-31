@@ -21,7 +21,6 @@ exec vllm serve zai-org/GLM-5-FP8 \
     --speculative-config.method mtp \
     --speculative-config.num_speculative_tokens 3 \
     --max-model-len 65536 \
-    --gpu-memory-utilization 0.85 \
     --tool-call-parser glm47 \
     --reasoning-parser glm45 \
     --enable-auto-tool-choice \
