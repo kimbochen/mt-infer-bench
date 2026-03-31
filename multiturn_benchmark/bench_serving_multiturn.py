@@ -354,15 +354,16 @@ async def send_request(
                     data = json.loads(chunk)
 
                     delta = data["choices"][0]["delta"]
-                    if delta.get("content", None):
+                    token_text = delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning") or ""
+                    if token_text:
                         if ttft is None:
                             first_token_time = time.perf_counter_ns()
                             ttft = first_token_time - start_time
-                            first_chunk = delta["content"]
+                            first_chunk = token_text
                         else:
                             chunk_delay.append(timestamp - most_recent_timestamp)
 
-                        generated_text += delta["content"]
+                        generated_text += token_text
 
                     most_recent_timestamp = timestamp
         else:
