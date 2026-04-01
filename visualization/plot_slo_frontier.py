@@ -1,6 +1,6 @@
 """Plot SLO-to-throughput charts from benchmark sweep results.
 
-Chart 1: TTFT SLO (ms) vs Input Throughput (tok/gpu/s)
+Chart 1: TTFT SLO (s) vs Input Throughput (tok/gpu/s)
 Chart 2: TPOT SLO (ms) vs Output Throughput (tok/gpu/s)
 
 Each chart has three lines: SLO P50, SLO P90, SLO P99.
@@ -214,18 +214,18 @@ def main():
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
     def plot_chart(ax, metric_key, token_key, xlabel, ylabel,
-                   label_fn=None, label_desc=None):
+                   label_fn=None, label_desc=None, x_scale=1.0):
         for label, pct, color in percentiles:
             pts = compute_sweep_points(
                 runs, metric_key, token_key, args.num_gpus, pct
             )
             if pts:
-                xs = [p["x"] for p in pts]
+                xs = [p["x"] * x_scale for p in pts]
                 ys = [p["y"] for p in pts]
                 ax.scatter(xs, ys, color=color, s=30, zorder=2)
                 front = pareto_frontier(pts)
                 if len(front) >= 2:
-                    fx = [p["x"] for p in front]
+                    fx = [p["x"] * x_scale for p in front]
                     fy = [p["y"] for p in front]
                     ax.plot(fx, fy, color=color, linewidth=1.5, alpha=0.7,
                             label=f"SLO {label}", zorder=1)
@@ -240,7 +240,7 @@ def main():
                         if (pt["x"], pt["y"]) in frontier_pts:
                             ax.annotate(
                                 label_fn(pt),
-                                (pt["x"], pt["y"]),
+                                (pt["x"] * x_scale, pt["y"]),
                                 textcoords="offset points",
                                 xytext=(-5, 6),
                                 fontsize=7,
@@ -261,9 +261,10 @@ def main():
 
     plot_chart(
         ax1, "ttft_ms", "input_num_tokens",
-        "TTFT (ms)", "Input Throughput (tok/gpu/s)",
+        "TTFT (s)", "Input Throughput (tok/gpu/s)",
         label_fn=lambda pt: f'{pt["base_per_req"]} tok / {pt["cached_per_req"]} tok',
         label_desc="Label: Avg. Input per Turn / Avg. Cached Input per Turn",
+        x_scale=0.001,
     )
     plot_chart(
         ax2, "tpot_ms", "output_num_tokens",
