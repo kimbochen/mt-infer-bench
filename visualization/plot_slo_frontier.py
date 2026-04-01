@@ -213,8 +213,7 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    def plot_chart(ax, metric_key, token_key, xlabel, ylabel,
-                   label_fn=None, label_desc=None, x_scale=1.0):
+    def plot_chart(ax, metric_key, token_key, xlabel, ylabel, x_scale=1.0):
         for label, pct, color in percentiles:
             pts = compute_sweep_points(
                 runs, metric_key, token_key, args.num_gpus, pct
@@ -232,38 +231,14 @@ def main():
                 else:
                     ax.scatter([], [], color=color, s=30, label=f"SLO {label}")
 
-                if pct == 99 and label_fn is not None:
-                    frontier_pts = set(
-                        (p["x"], p["y"]) for p in pareto_frontier(pts)
-                    )
-                    for pt in pts:
-                        if (pt["x"], pt["y"]) in frontier_pts:
-                            ax.annotate(
-                                label_fn(pt),
-                                (pt["x"] * x_scale, pt["y"]),
-                                textcoords="offset points",
-                                xytext=(-5, 6),
-                                fontsize=7,
-                                color="#555555",
-                                ha="right",
-                            )
-
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         ax.legend()
         ax.grid(True, alpha=0.3)
-        if label_desc:
-            ax.text(
-                0.0, 1.02, label_desc,
-                transform=ax.transAxes, fontsize=7, color="#888888",
-                verticalalignment="bottom", horizontalalignment="left",
-            )
 
     plot_chart(
         ax1, "ttft_ms", "input_num_tokens",
         "TTFT (s)", "Input Throughput (tok/gpu/s)",
-        label_fn=lambda pt: f'{pt["base_per_req"]} tok / {pt["cached_per_req"]} tok',
-        label_desc="Label: Avg. Input per Turn / Avg. Cached Input per Turn",
         x_scale=0.001,
     )
     plot_chart(
